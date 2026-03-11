@@ -1,0 +1,13 @@
+{
+  "name": "dynamic-stable-coin-manager",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test",
+    "coverage": "forge coverage --ir-minimum --report lcov",
+    "frontend:dev": "pnpm --dir frontend dev",
+    "frontend:build": "pnpm --dir frontend build"
+  }
+}

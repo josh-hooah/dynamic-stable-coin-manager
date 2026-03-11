@@ -1,0 +1,79 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  frontend:
+    dependencies:
+      react:
+        specifier: 18.3.1
+        version: 18.3.1
+      react-dom:
+        specifier: 18.3.1
+        version: 18.3.1
+      viem:
+        specifier: 2.23.11
+        version: 2.23.11(typescript@5.7.3)
+    devDependencies:
+      '@types/react':
+        specifier: 18.3.14
+        version: 18.3.14
+      '@types/react-dom':
+        specifier: 18.3.3
+        version: 18.3.3
+      '@vitejs/plugin-react':
+        specifier: 4.3.4
+        version: 4.3.4(vite@5.4.10)
+      typescript:
+        specifier: 5.7.3
+        version: 5.7.3
+      vite:
+        specifier: 5.4.10
+        version: 5.4.10
+
+packages:
+
+  react@18.3.1:
+    resolution: {integrity: sha512-REDACTED}
+
+  react-dom@18.3.1:
+    resolution: {integrity: sha512-REDACTED}
+
+  viem@2.23.11:
+    resolution: {integrity: sha512-REDACTED}
+
+  typescript@5.7.3:
+    resolution: {integrity: sha512-REDACTED}
+
+  vite@5.4.10:
+    resolution: {integrity: sha512-REDACTED}
+
+  '@vitejs/plugin-react@4.3.4':
+    resolution: {integrity: sha512-REDACTED}
+
+  '@types/react@18.3.14':
+    resolution: {integrity: sha512-REDACTED}
+
+  '@types/react-dom@18.3.3':
+    resolution: {integrity: sha512-REDACTED}
+
+snapshots:
+  react@18.3.1: {}
+  react-dom@18.3.1(react@18.3.1):
+    dependencies:
+      react: 18.3.1
+  viem@2.23.11(typescript@5.7.3):
+    dependencies:
+      typescript: 5.7.3
+  typescript@5.7.3: {}
+  vite@5.4.10: {}
+  '@vitejs/plugin-react@4.3.4(vite@5.4.10)':
+    dependencies:
+      vite: 5.4.10
+  '@types/react@18.3.14': {}
+  '@types/react-dom@18.3.3': {}
