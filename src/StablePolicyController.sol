@@ -75,16 +75,6 @@ contract StablePolicyController {
         _;
     }
 
-    modifier onlyPoolAdmin(
-        bytes32 poolId
-    ) {
-        PoolConfig memory current = _poolConfigs[poolId];
-        address poolAdmin = current.admin;
-        bool isAuthorized = msg.sender == owner || (poolAdmin != address(0) && msg.sender == poolAdmin);
-        if (!isAuthorized) revert Unauthorized();
-        _;
-    }
-
     function setOwner(
         address newOwner
     ) external onlyOwner {
@@ -110,7 +100,8 @@ contract StablePolicyController {
     function setPoolConfig(
         PoolId poolId,
         PoolConfig calldata nextConfig
-    ) external onlyPoolAdmin(PoolId.unwrap(poolId)) {
+    ) external {
+        _assertPoolAdmin(PoolId.unwrap(poolId));
         if (timelockSeconds != 0) revert TimelockEnabled();
         _applyConfig(PoolId.unwrap(poolId), nextConfig);
     }
@@ -118,10 +109,10 @@ contract StablePolicyController {
     function queuePoolConfig(
         PoolId poolId,
         PoolConfig calldata nextConfig
-    ) external onlyPoolAdmin(PoolId.unwrap(poolId)) {
-        if (timelockSeconds == 0) revert TimelockDisabled();
-
+    ) external {
         bytes32 poolIdRaw = PoolId.unwrap(poolId);
+        _assertPoolAdmin(poolIdRaw);
+        if (timelockSeconds == 0) revert TimelockDisabled();
         _validateConfig(poolIdRaw, nextConfig);
 
         bytes32 configHash = _hashConfig(nextConfig);
@@ -136,10 +127,10 @@ contract StablePolicyController {
     function executeQueuedPoolConfig(
         PoolId poolId,
         PoolConfig calldata nextConfig
-    ) external onlyPoolAdmin(PoolId.unwrap(poolId)) {
-        if (timelockSeconds == 0) revert TimelockDisabled();
-
+    ) external {
         bytes32 poolIdRaw = PoolId.unwrap(poolId);
+        _assertPoolAdmin(poolIdRaw);
+        if (timelockSeconds == 0) revert TimelockDisabled();
         PendingConfig memory pending = _pendingConfigs[poolIdRaw];
         if (pending.eta == 0 || block.timestamp < pending.eta) revert PendingConfigNotReady();
 
@@ -229,6 +220,15 @@ contract StablePolicyController {
         bytes32 poolId
     ) external view returns (PendingConfig memory) {
         return _pendingConfigs[poolId];
+    }
+
+    function _assertPoolAdmin(
+        bytes32 poolId
+    ) internal view {
+        if (msg.sender == owner) return;
+
+        address poolAdmin = _poolConfigs[poolId].admin;
+        if (poolAdmin == address(0) || msg.sender != poolAdmin) revert Unauthorized();
     }
 
     function _applyConfig(

@@ -16,6 +16,7 @@ import {PolicyMath} from "../src/libraries/PolicyMath.sol";
 import {StablePolicyController} from "../src/StablePolicyController.sol";
 import {DynamicStableManagerHook} from "../src/DynamicStableManagerHook.sol";
 import {MockPoolManager} from "../src/mocks/MockPoolManager.sol";
+import {DynamicStableManagerHookUnsafe} from "../src/mocks/DynamicStableManagerHookUnsafe.sol";
 import {TestDynamicStableManagerHook} from "./mocks/TestDynamicStableManagerHook.sol";
 
 contract DynamicStableManagerHookTest is Test {
@@ -85,6 +86,50 @@ contract DynamicStableManagerHookTest is Test {
         new DynamicStableManagerHook(IPoolManager(address(manager)), controller);
     }
 
+    function test_ConstructorRevertsWhenControllerIsZeroAddress() external {
+        vm.expectRevert(DynamicStableManagerHook.ControllerZeroAddress.selector);
+        new DynamicStableManagerHookUnsafe(IPoolManager(address(manager)), StablePolicyController(address(0)));
+    }
+
+    function test_GetHookPermissionsEnablesOnlySwapCallbacks() external view {
+        Hooks.Permissions memory permissions = hook.getHookPermissions();
+        assertTrue(permissions.beforeSwap);
+        assertTrue(permissions.afterSwap);
+
+        assertFalse(permissions.beforeInitialize);
+        assertFalse(permissions.afterInitialize);
+        assertFalse(permissions.beforeAddLiquidity);
+        assertFalse(permissions.afterAddLiquidity);
+        assertFalse(permissions.beforeRemoveLiquidity);
+        assertFalse(permissions.afterRemoveLiquidity);
+        assertFalse(permissions.beforeDonate);
+        assertFalse(permissions.afterDonate);
+        assertFalse(permissions.beforeSwapReturnDelta);
+        assertFalse(permissions.afterSwapReturnDelta);
+        assertFalse(permissions.afterAddLiquidityReturnDelta);
+        assertFalse(permissions.afterRemoveLiquidityReturnDelta);
+    }
+
+    function test_BeforeSwapWithStaticFeePoolReturnsNoOverride() external {
+        PoolKey memory staticFeeKey = key;
+        staticFeeKey.fee = 500;
+
+        vm.prank(address(manager));
+        (, BeforeSwapDelta delta, uint24 feeOverride) =
+            hook.beforeSwap(address(this), staticFeeKey, _swapParams(-100e6, uint160(0.999e18)), bytes(""));
+
+        assertEq(BeforeSwapDelta.unwrap(delta), 0);
+        assertEq(feeOverride, 0);
+    }
+
+    function test_BeforeSwapRevertsWhenReentrancyLockIsSet() external {
+        vm.store(address(hook), bytes32(uint256(1)), bytes32(uint256(1)));
+
+        vm.prank(address(manager));
+        vm.expectRevert();
+        hook.beforeSwap(address(this), key, _swapParams(-100e6, uint160(0.999e18)), bytes(""));
+    }
+
     function test_BeforeSwapInNormalRegimeReturnsDynamicFeeOverride() external {
         vm.expectEmit(true, false, false, true, address(hook));
         emit PolicyTriggered(
@@ -146,6 +191,95 @@ contract DynamicStableManagerHookTest is Test {
 
         assertEq(BeforeSwapDelta.unwrap(delta), 0);
         assertEq(feeOverride, 0);
+    }
+
+    function test_PreviewSwapPolicy_ConfigDisabledReturnsDisabledReason() external {
+        StablePolicyController.PoolConfig memory cfg = _baseConfig(2);
+        cfg.enabled = false;
+        controller.setPoolConfig(poolId, cfg);
+
+        DynamicStableManagerHook.PolicyPreview memory preview = hook.previewSwapPolicy(
+            key, _swapParams(-100e6, uint160(0.999e18))
+        );
+
+        assertEq(uint8(preview.regime), uint8(PolicyMath.Regime.NORMAL));
+        assertEq(uint8(preview.reasonCode), uint8(PolicyMath.ReasonCode.CONFIG_DISABLED));
+        assertTrue(preview.dynamicFeeOverrideEnabled);
+        assertFalse(preview.wouldRevert);
+    }
+
+    function test_PreviewSwapPolicy_NormalSoftHardSelections() external {
+        manager.setSlot0(poolId, uint160(1e18), 5, 0, 0);
+        DynamicStableManagerHook.PolicyPreview memory normalPreview = hook.previewSwapPolicy(
+            key, _swapParams(-100e6, uint160(0.999e18))
+        );
+        assertEq(uint8(normalPreview.regime), uint8(PolicyMath.Regime.NORMAL));
+        assertEq(normalPreview.selectedFeeBps, 5);
+        assertEq(normalPreview.maxSwap, 0);
+        assertEq(normalPreview.maxImpactBps, 0);
+        assertFalse(normalPreview.wouldRevert);
+
+        manager.setSlot0(poolId, uint160(1e18), 15, 0, 0);
+        DynamicStableManagerHook.PolicyPreview memory softPreview = hook.previewSwapPolicy(
+            key, _swapParams(-501e6, uint160(0.999e18))
+        );
+        assertEq(uint8(softPreview.regime), uint8(PolicyMath.Regime.SOFT_DEPEG));
+        assertEq(softPreview.selectedFeeBps, 25);
+        assertEq(softPreview.maxSwap, 500e6);
+        assertEq(softPreview.maxImpactBps, 60);
+        assertTrue(softPreview.wouldRevert);
+
+        manager.setSlot0(poolId, uint160(1e18), 50, 0, 0);
+        DynamicStableManagerHook.PolicyPreview memory hardPreview = hook.previewSwapPolicy(
+            key, _swapParams(-10e6, uint160(0.85e18))
+        );
+        assertEq(uint8(hardPreview.regime), uint8(PolicyMath.Regime.HARD_DEPEG));
+        assertEq(hardPreview.selectedFeeBps, 100);
+        assertEq(hardPreview.maxSwap, 100e6);
+        assertEq(hardPreview.maxImpactBps, 20);
+        assertTrue(hardPreview.wouldRevert);
+    }
+
+    function test_PreviewSwapPolicy_UsesFlowWindowAccumulatorAndReset() external {
+        manager.setSlot0(poolId, uint160(1e18), 5, 0, 0);
+
+        vm.prank(address(manager));
+        hook.beforeSwap(address(this), key, _swapParams(-100e6, uint160(0.999e18)), bytes(""));
+
+        DynamicStableManagerHook.PolicyPreview memory withinWindow = hook.previewSwapPolicy(
+            key, _swapParams(-75e6, uint160(0.999e18))
+        );
+        assertEq(uint8(withinWindow.regime), uint8(PolicyMath.Regime.NORMAL));
+
+        vm.warp(block.timestamp + 121);
+        DynamicStableManagerHook.PolicyPreview memory afterWindow = hook.previewSwapPolicy(
+            key, _swapParams(-75e6, uint160(0.999e18))
+        );
+        assertEq(uint8(afterWindow.regime), uint8(PolicyMath.Regime.NORMAL));
+    }
+
+    function test_PreviewSwapPolicy_HardCooldownSurfacesAsWouldRevert() external {
+        manager.setSlot0(poolId, uint160(1e18), 40, 0, 0);
+
+        vm.prank(address(manager));
+        hook.beforeSwap(address(this), key, _swapParams(-50e6, uint160(0.9999e18)), bytes(""));
+
+        DynamicStableManagerHook.PolicyPreview memory preview = hook.previewSwapPolicy(
+            key, _swapParams(-50e6, uint160(0.9999e18))
+        );
+        assertEq(uint8(preview.regime), uint8(PolicyMath.Regime.HARD_DEPEG));
+        assertTrue(preview.wouldRevert);
+    }
+
+    function test_PreviewSwapPolicy_StaticFeeKeyReportsDynamicOverrideDisabled() external {
+        PoolKey memory staticFeeKey = key;
+        staticFeeKey.fee = 500;
+        manager.setSlot0(poolId, uint160(1e18), 5, 0, 0);
+
+        DynamicStableManagerHook.PolicyPreview memory preview = hook.previewSwapPolicy(
+            staticFeeKey, _swapParams(-100e6, uint160(0.999e18))
+        );
+        assertFalse(preview.dynamicFeeOverrideEnabled);
     }
 
     function test_AfterSwapRefreshesRuntimeTick() external {

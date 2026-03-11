@@ -49,6 +49,13 @@ contract DynamicStableManagerHook is BaseHook {
         bool dynamicFeeOverrideEnabled;
     }
 
+    struct BeforeSwapContext {
+        bytes32 poolIdRaw;
+        StablePolicyController.PoolConfig cfg;
+        uint160 sqrtPriceX96;
+        int24 tick;
+    }
+
     StablePolicyController public immutable controller;
 
     mapping(bytes32 poolId => PoolRuntime runtime) private _runtime;
@@ -167,88 +174,31 @@ contract DynamicStableManagerHook is BaseHook {
         _swapReentrancyLock = 1;
 
         PoolId poolId = key.toId();
-        bytes32 poolIdRaw = PoolId.unwrap(poolId);
-        StablePolicyController.PoolConfig memory cfg = controller.getPoolConfig(poolId);
+        BeforeSwapContext memory context;
+        context.poolIdRaw = PoolId.unwrap(poolId);
+        context.cfg = controller.getPoolConfig(poolId);
 
-        if (!cfg.enabled) {
+        if (!context.cfg.enabled) {
             emit PolicyTriggered(
-                poolIdRaw, uint8(_runtime[poolIdRaw].lastRegime), uint8(PolicyMath.ReasonCode.CONFIG_DISABLED)
+                context.poolIdRaw,
+                uint8(_runtime[context.poolIdRaw].lastRegime),
+                uint8(PolicyMath.ReasonCode.CONFIG_DISABLED)
             );
             _swapReentrancyLock = 0;
             return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
 
-        (uint160 sqrtPriceX96, int24 tick,,) = StateLibrary.getSlot0(poolManager, poolId);
+        (context.sqrtPriceX96, context.tick,,) = StateLibrary.getSlot0(poolManager, poolId);
+        PoolRuntime storage rt = _runtime[context.poolIdRaw];
+        (PolicyMath.Regime regime, PolicyMath.ReasonCode reasonCode) = _updateFlowAndSelectRegime(rt, context, params);
 
-        PoolRuntime storage rt = _runtime[poolIdRaw];
-
-        uint256 volatility =
-            rt.lastObservationTimestamp == 0 ? 0 : PolicyMath.absInt(int256(tick) - int256(rt.lastTick));
-
-        if (rt.windowStartTimestamp == 0 || block.timestamp - rt.windowStartTimestamp >= cfg.flowWindowSeconds) {
-            rt.windowStartTimestamp = uint40(block.timestamp);
-            rt.netFlowAccumulator = params.amountSpecified;
-        } else {
-            rt.netFlowAccumulator += params.amountSpecified;
-        }
-
-        uint256 imbalance = PolicyMath.absInt(rt.netFlowAccumulator);
-
-        (PolicyMath.Regime regime, PolicyMath.ReasonCode reasonCode,) = PolicyMath.selectRegime(
-            PolicyMath.RegimeInput({
-                pegTick: cfg.pegTick,
-                currentTick: tick,
-                band1Ticks: cfg.band1Ticks,
-                band2Ticks: cfg.band2Ticks,
-                hysteresisTicks: cfg.hysteresisTicks,
-                volatilityProxy: volatility,
-                imbalanceProxy: imbalance,
-                volatilityHardThreshold: cfg.volatilityHardThreshold,
-                imbalanceHardThreshold: cfg.imbalanceHardThreshold,
-                previousRegime: rt.lastRegime
-            })
-        );
-
-        if (regime == PolicyMath.Regime.HARD_DEPEG && cfg.cooldownSecondsHard != 0) {
-            if (block.timestamp < rt.nextHardSwapAllowedAt) {
-                emit PolicyTriggered(poolIdRaw, uint8(regime), uint8(PolicyMath.ReasonCode.COOLDOWN));
-                _swapReentrancyLock = 0;
-                revert CooldownActive(rt.nextHardSwapAllowedAt);
-            }
-            rt.nextHardSwapAllowedAt = uint40(block.timestamp + cfg.cooldownSecondsHard);
-        }
-
-        uint256 absAmount = PolicyMath.absInt(params.amountSpecified);
-        uint256 maxSwap = regime == PolicyMath.Regime.HARD_DEPEG
-            ? cfg.maxSwapHard
-            : (regime == PolicyMath.Regime.SOFT_DEPEG ? cfg.maxSwapSoft : 0);
-
-        if (maxSwap != 0 && absAmount > maxSwap) {
-            emit PolicyTriggered(poolIdRaw, uint8(regime), uint8(PolicyMath.ReasonCode.MAX_SWAP_EXCEEDED));
-            _swapReentrancyLock = 0;
-            revert MaxSwapExceeded(maxSwap, absAmount);
-        }
-
-        uint16 maxImpact = regime == PolicyMath.Regime.HARD_DEPEG
-            ? cfg.maxImpactBpsHard
-            : (regime == PolicyMath.Regime.SOFT_DEPEG ? cfg.maxImpactBpsSoft : 0);
-        uint16 estimatedImpact = PolicyMath.estimateImpactBps(sqrtPriceX96, params.sqrtPriceLimitX96);
-
-        if (maxImpact != 0 && estimatedImpact > maxImpact) {
-            emit PolicyTriggered(poolIdRaw, uint8(regime), uint8(PolicyMath.ReasonCode.IMPACT_TOO_HIGH));
-            _swapReentrancyLock = 0;
-            revert ImpactTooHigh(maxImpact, estimatedImpact);
-        }
+        uint16 selectedFeeBps = _enforceSwapGuards(context, rt, regime, params);
 
         rt.lastRegime = regime;
-        rt.lastTick = tick;
+        rt.lastTick = context.tick;
         rt.lastObservationTimestamp = uint40(block.timestamp);
 
-        uint16 selectedFeeBps = regime == PolicyMath.Regime.NORMAL
-            ? cfg.feeNormalBps
-            : (regime == PolicyMath.Regime.SOFT_DEPEG ? cfg.feeSoftBps : cfg.feeHardBps);
-
-        emit PolicyTriggered(poolIdRaw, uint8(regime), uint8(reasonCode));
+        emit PolicyTriggered(context.poolIdRaw, uint8(regime), uint8(reasonCode));
 
         uint24 feeOverride;
         if (key.fee.isDynamicFee()) {
@@ -257,6 +207,76 @@ contract DynamicStableManagerHook is BaseHook {
 
         _swapReentrancyLock = 0;
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, feeOverride);
+    }
+
+    function _updateFlowAndSelectRegime(
+        PoolRuntime storage rt,
+        BeforeSwapContext memory context,
+        SwapParams calldata params
+    ) internal returns (PolicyMath.Regime regime, PolicyMath.ReasonCode reasonCode) {
+        uint256 volatility =
+            rt.lastObservationTimestamp == 0 ? 0 : PolicyMath.absInt(int256(context.tick) - int256(rt.lastTick));
+
+        if (rt.windowStartTimestamp == 0 || block.timestamp - rt.windowStartTimestamp >= context.cfg.flowWindowSeconds)
+        {
+            rt.windowStartTimestamp = uint40(block.timestamp);
+            rt.netFlowAccumulator = params.amountSpecified;
+        } else {
+            rt.netFlowAccumulator += params.amountSpecified;
+        }
+
+        uint256 imbalance = PolicyMath.absInt(rt.netFlowAccumulator);
+        (regime, reasonCode,) = PolicyMath.selectRegime(
+            PolicyMath.RegimeInput({
+                pegTick: context.cfg.pegTick,
+                currentTick: context.tick,
+                band1Ticks: context.cfg.band1Ticks,
+                band2Ticks: context.cfg.band2Ticks,
+                hysteresisTicks: context.cfg.hysteresisTicks,
+                volatilityProxy: volatility,
+                imbalanceProxy: imbalance,
+                volatilityHardThreshold: context.cfg.volatilityHardThreshold,
+                imbalanceHardThreshold: context.cfg.imbalanceHardThreshold,
+                previousRegime: rt.lastRegime
+            })
+        );
+    }
+
+    function _enforceSwapGuards(
+        BeforeSwapContext memory context,
+        PoolRuntime storage rt,
+        PolicyMath.Regime regime,
+        SwapParams calldata params
+    ) internal returns (uint16 selectedFeeBps) {
+        if (regime == PolicyMath.Regime.HARD_DEPEG && context.cfg.cooldownSecondsHard != 0) {
+            if (block.timestamp < rt.nextHardSwapAllowedAt) {
+                emit PolicyTriggered(context.poolIdRaw, uint8(regime), uint8(PolicyMath.ReasonCode.COOLDOWN));
+                revert CooldownActive(rt.nextHardSwapAllowedAt);
+            }
+            rt.nextHardSwapAllowedAt = uint40(block.timestamp + context.cfg.cooldownSecondsHard);
+        }
+
+        uint256 absAmount = PolicyMath.absInt(params.amountSpecified);
+        uint256 maxSwap = regime == PolicyMath.Regime.HARD_DEPEG
+            ? context.cfg.maxSwapHard
+            : (regime == PolicyMath.Regime.SOFT_DEPEG ? context.cfg.maxSwapSoft : 0);
+        if (maxSwap != 0 && absAmount > maxSwap) {
+            emit PolicyTriggered(context.poolIdRaw, uint8(regime), uint8(PolicyMath.ReasonCode.MAX_SWAP_EXCEEDED));
+            revert MaxSwapExceeded(maxSwap, absAmount);
+        }
+
+        uint16 maxImpact = regime == PolicyMath.Regime.HARD_DEPEG
+            ? context.cfg.maxImpactBpsHard
+            : (regime == PolicyMath.Regime.SOFT_DEPEG ? context.cfg.maxImpactBpsSoft : 0);
+        uint16 estimatedImpact = PolicyMath.estimateImpactBps(context.sqrtPriceX96, params.sqrtPriceLimitX96);
+        if (maxImpact != 0 && estimatedImpact > maxImpact) {
+            emit PolicyTriggered(context.poolIdRaw, uint8(regime), uint8(PolicyMath.ReasonCode.IMPACT_TOO_HIGH));
+            revert ImpactTooHigh(maxImpact, estimatedImpact);
+        }
+
+        selectedFeeBps = regime == PolicyMath.Regime.NORMAL
+            ? context.cfg.feeNormalBps
+            : (regime == PolicyMath.Regime.SOFT_DEPEG ? context.cfg.feeSoftBps : context.cfg.feeHardBps);
     }
 
     function _afterSwap(

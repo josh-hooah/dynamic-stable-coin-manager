@@ -54,6 +54,11 @@ contract PolicyMathTest is Test {
         assertEq(uint8(regime), uint8(PolicyMath.Regime.SOFT_DEPEG));
     }
 
+    function test_PreviousHardCanReturnToNormalInsideBand1() external {
+        (PolicyMath.Regime regime,,) = PolicyMath.selectRegime(_input(10, PolicyMath.Regime.HARD_DEPEG));
+        assertEq(uint8(regime), uint8(PolicyMath.Regime.NORMAL));
+    }
+
     function test_VolatilityProxyForcesHard() external {
         PolicyMath.RegimeInput memory data = _input(2, PolicyMath.Regime.NORMAL);
         data.volatilityProxy = 10;
@@ -74,5 +79,9 @@ contract PolicyMathTest is Test {
 
     function test_ImpactEstimateAtZeroLimitReturnsZero() external {
         assertEq(PolicyMath.estimateImpactBps(1e18, 0), 0);
+    }
+
+    function test_ImpactEstimateCapsToUint16Max() external {
+        assertEq(PolicyMath.estimateImpactBps(1, type(uint160).max), type(uint16).max);
     }
 }

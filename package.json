@@ -6,7 +6,7 @@
   "scripts": {
     "build": "forge build",
     "test": "forge test",
-    "coverage": "forge coverage --ir-minimum --report lcov",
+    "coverage": "./scripts/verify_coverage.sh",
     "frontend:dev": "pnpm --dir frontend dev",
     "frontend:build": "pnpm --dir frontend build"
   }

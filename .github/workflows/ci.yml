@@ -32,7 +32,7 @@ jobs:
         run: forge test -vv
 
       - name: Coverage
-        run: forge coverage --ir-minimum --report lcov
+        run: ./scripts/verify_coverage.sh
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4

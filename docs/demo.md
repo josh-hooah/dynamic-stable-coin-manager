@@ -1,5 +1,20 @@
 # Demo Guide
 
+## Full workflow (recommended)
+
+```bash
+make demo-workflow
+```
+
+Phases included:
+- preflight assumptions (including reactive integration check)
+- 100% coverage gate
+- local lifecycle swaps
+- stress regression
+- Unichain deployment check/deploy
+- Unichain policy demo with explorer-linked tx hashes
+- operator/user walkthrough mapping frontend actions to tx flow
+
 ## One-click local demo
 
 ```bash
@@ -22,7 +37,7 @@ Runs integration path to show normal -> soft -> hard transitions and blocked tra
 ## Testnet demo
 
 ```bash
-BASE_SEPOLIA_RPC_URL=... PRIVATE_KEY=... POOL_MANAGER=... make demo-testnet
+UNICHAIN_SEPOLIA_RPC_URL=... PRIVATE_KEY=... POOL_MANAGER=... make demo-testnet
 ```
 
 Output includes tx hashes and explorer links.

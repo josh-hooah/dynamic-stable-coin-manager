@@ -156,7 +156,15 @@ make test
 make coverage
 ```
 
+`make coverage` enforces 100% line+branch coverage on tracked production contracts (`src/**` excluding mocks).
+
 ## Demo
+
+### Full End-to-End Workflow
+
+```bash
+make demo-workflow
+```
 
 ### Local
 
@@ -170,10 +178,10 @@ make demo-local
 make demo-stress
 ```
 
-### Base Sepolia Deploy + tx links
+### Unichain Sepolia Deploy + tx links
 
 ```bash
-BASE_SEPOLIA_RPC_URL=... PRIVATE_KEY=... POOL_MANAGER=... make demo-testnet
+UNICHAIN_SEPOLIA_RPC_URL=... PRIVATE_KEY=... POOL_MANAGER=... make demo-testnet
 ```
 
 ## Security Model
