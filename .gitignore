@@ -15,3 +15,8 @@ node_modules/
 
 # Dotenv file
 .env
+
+# Local context mirrors
+context/documentation/
+context/reactive/
+context/uniswap_docs/docs/
