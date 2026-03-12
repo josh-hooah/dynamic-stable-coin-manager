@@ -1,224 +1,263 @@
 # Dynamic Stablecoin Manager Hook
+**Built on Uniswap v4 · Deployed on Unichain Sepolia**
+_Targeting: Uniswap Foundation Prize · Unichain Prize_
 
-<p>
-  <img src="./assets/uniswap-v4-mark.svg" alt="Uniswap v4" height="42" />
-  <img src="./assets/stable-manager-mark.svg" alt="Stable Manager" height="42" />
-</p>
+> Adaptive-fee, deterministic peg-defense management for Uniswap v4 stable pools.
 
-Adaptive-fee, deterministic peg-defense hook for Uniswap v4 stable pools.
+![CI](https://img.shields.io/github/actions/workflow/status/josh-hooah/dynamic-stable-coin-manager/ci.yml?branch=main&label=CI)
+![Coverage](https://img.shields.io/badge/Coverage-100%25-brightgreen)
+![Solidity](https://img.shields.io/badge/Solidity-0.8.26-363636)
+![Uniswap v4](https://img.shields.io/badge/Uniswap-v4-FF007A)
+![Unichain Sepolia](https://img.shields.io/badge/Unichain-Sepolia-1301-1f6feb)
 
-## Problem
-Stablecoin pools face toxic order flow during depegs. Static fee pools are brittle: they either overcharge in normal conditions or under-protect LPs in stress.
+## The Problem
 
-## Solution
-`DynamicStableManagerHook` computes swap regime *on-chain per swap* from deterministic signals:
+Stablecoin pools are exposed to regime shifts where static execution rules become unsafe. During depegs, fixed fee tiers and no deterministic guardrails let toxic flow route quickly against LP inventory.
 
-- tick distance from peg (`|tick - pegTick|`)
-- rolling tick movement proxy (abs tick delta)
-- rolling imbalance proxy (net flow accumulator)
+| Layer | Failure Mode |
+|---|---|
+| Pricing | Static fee tier cannot adapt to depeg stress. |
+| Execution | No deterministic per-swap max size and impact guardrails. |
+| Governance | Manual parameter changes lag market state during stress windows. |
+| Risk Control | No built-in hysteresis or cooldown to reduce policy flapping. |
 
-Then it applies deterministic execution policy:
+The result is predictable LP adverse selection exactly when stablecoin markets are most unstable.
 
-- effective fee by regime (`NORMAL`, `SOFT_DEPEG`, `HARD_DEPEG`)
-- max swap guardrails (soft/hard)
-- max impact guardrails (soft/hard)
-- optional hard-regime cooldown
+## The Solution
 
-No keepers, no offchain oracles for core regime decision, no reactive components.
+The system enforces deterministic policy at swap time, inside a Uniswap v4 hook.
 
-## Monorepo Layout
+1. `StablePolicyController` stores per-pool peg bands, fee schedule, and guardrails.
+2. `DynamicStableManagerHook.beforeSwap` reads pool config and current `slot0` state.
+3. `PolicyMath.selectRegime` computes `NORMAL`, `SOFT_DEPEG`, or `HARD_DEPEG`.
+4. Hook enforces cooldown, `maxSwap`, and `maxImpact` based on selected regime.
+5. For dynamic-fee pools, hook returns per-swap LP fee override; otherwise guardrails still apply.
+6. `afterSwap` updates runtime observations (`lastTick`, timestamps) for next decision.
 
-```text
-/
-  .github/workflows/
-  .vscode/
-  assets/
-  context/
-  docs/
-  frontend/
-  lib/
-  script/
-  scripts/
-  shared/
-  src/
-  test/
-  foundry.toml
-  remappings.txt
-  foundry.lock
-  .gitmodules
-  Makefile
-  pnpm-lock.yaml
-```
+Core insight: the pool policy itself can be deterministic on-chain state, not an off-chain reaction loop.
 
 ## Architecture
 
-```mermaid
-graph TD
-  A[Frontend Console] --> B[StablePolicyController]
-  A --> C[DynamicStableManagerHook]
-  C --> D[PoolManager]
-  C --> B
-  D --> C
-  E[Pool State slot0] --> C
+### Component Overview
+
+```text
+src/
+  StablePolicyController.sol           # Per-pool policy storage, admin controls, nonce/timelock validation
+  DynamicStableManagerHook.sol         # Uniswap v4 swap hook; regime select + guard enforcement
+  libraries/
+    PolicyMath.sol                     # Pure regime math, hysteresis, impact estimation
+scripts/
+  deploy-unichain.sh                   # Deploy + persist addresses to .env
+  demo-testnet.sh                      # On-chain policy demo + tx URL proof
+  demo-workflow.sh                     # Full proof chain runner
+test/
+  StablePolicyController.t.sol         # Config bounds, auth, timelock, nonce tests
+  DynamicStableManagerHook.t.sol       # Hook guards, permissions, dynamic fee path tests
+  PolicyMath.t.sol                     # Regime boundaries and hysteresis tests
+  fuzz/PolicyFuzz.t.sol                # Determinism and bounds fuzz properties
+  integration/DynamicStableManager.integration.t.sol  # Lifecycle integration behavior
 ```
 
-### Swap Lifecycle
+### Architecture Flow (Subgraphs)
+
+```mermaid
+flowchart TD
+  subgraph EntryLayer[Entry Layer]
+    EntryTx[Wallet Tx or CLI Script]
+  end
+
+  subgraph UnichainSepolia[Unichain Sepolia]
+    subgraph UniswapV4[Uniswap v4]
+      PM[PoolManager]
+    end
+    subgraph PolicyLayer[Policy Layer]
+      Hook[DynamicStableManagerHook]
+      Controller[StablePolicyController]
+      Math[PolicyMath]
+    end
+  end
+
+  EntryTx --> PM
+  PM -->|beforeSwap| Hook
+  Hook -->|getPoolConfig| Controller
+  Hook -->|selectRegime| Math
+  Hook -->|feeOverride or revert| PM
+  PM -->|afterSwap| Hook
+```
+
+### User Perspective Flow
+
+```mermaid
+flowchart LR
+  Start[Wallet Tx: IPoolManager.swap or forge script] --> Callback[PoolManager calls hook beforeSwap]
+  Callback --> Decision{Policy checks pass?}
+  Decision -->|Yes| FeePath[Return fee override when dynamic fee enabled]
+  FeePath --> Execute[PoolManager executes swap]
+  Execute --> After[Hook afterSwap updates runtime]
+  After --> EventOk[PolicyTriggered emitted]
+  Decision -->|No| RevertPath[Revert: CooldownActive / MaxSwapExceeded / ImpactTooHigh]
+```
+
+### Interaction Sequence
 
 ```mermaid
 sequenceDiagram
-  participant User
+  participant Operator
   participant PoolManager
   participant Hook as DynamicStableManagerHook
   participant Controller as StablePolicyController
+  participant Math as PolicyMath
 
-  User->>PoolManager: swap(key, params)
-  PoolManager->>Hook: beforeSwap(sender,key,params)
-  Hook->>PoolManager: read slot0 (tick, sqrtPrice)
-  Hook->>Controller: read pool config
-  Hook->>Hook: derive regime + checks
-  alt policy violation
-    Hook-->>PoolManager: revert (reason code)
+  Note over Operator,Controller: Governance setup
+  Operator->>Controller: setPoolConfig(poolId, cfg)
+  Controller-->>Operator: ConfigSet(poolId, configHash, policyNonce)
+
+  Note over Operator,Hook: Swap execution path
+  Operator->>PoolManager: swap(key, params, hookData)
+  PoolManager->>Hook: beforeSwap(sender, key, params, hookData)
+  Hook->>Controller: getPoolConfig(poolId)
+  Hook->>PoolManager: StateLibrary.getSlot0(poolId)
+  Hook->>Math: selectRegime(input)
+  alt guard violation
+    Hook-->>PoolManager: revert(error)
   else allowed
-    Hook-->>PoolManager: selector + optional fee override
-    PoolManager->>PoolManager: execute swap
-    PoolManager->>Hook: afterSwap(...)
-    Hook-->>PoolManager: selector
+    Hook-->>PoolManager: selector, ZERO_DELTA, feeOverride
+    PoolManager->>Hook: afterSwap(sender, key, params, delta, hookData)
+    Hook-->>PoolManager: selector, 0
   end
 ```
 
-### Component Interaction
+## Regime Policy Engine
 
-```mermaid
-graph LR
-  FE[frontend] --> CTRL[StablePolicyController]
-  FE --> HOOK[DynamicStableManagerHook]
-  CTRL --> HOOK
-  HOOK --> PM[PoolManager]
-```
+| Regime | Trigger Condition | Fee Target | Guards | Reason Code |
+|---|---|---|---|---|
+| `NORMAL` | `deviationTicks <= band1Ticks` | `feeNormalBps` | none by default | `NORMAL` |
+| `SOFT_DEPEG` | `band1Ticks < deviationTicks <= band2Ticks` | `feeSoftBps` | `maxSwapSoft`, `maxImpactBpsSoft` | `SOFT_DEPEG` |
+| `HARD_DEPEG` | `deviationTicks > band2Ticks` or proxy threshold breach | `feeHardBps` | `maxSwapHard`, `maxImpactBpsHard`, optional cooldown | `HARD_DEPEG` |
 
-## Contracts
+Hysteresis modifies soft/hard exits (`band - hysteresisTicks`) to reduce threshold flapping. Hard regime can also be forced by deterministic volatility or imbalance proxies.
 
-- `src/DynamicStableManagerHook.sol`
-  - implements Uniswap v4 core hook functions (`beforeSwap`, `afterSwap`)
-  - enforces `onlyPoolManager` through `BaseHook`
-  - reads `PoolConfig` from controller
-  - applies regime fee/guardrails deterministically
-  - emits `PolicyTriggered(poolId, regime, reasonCode)`
+## Deployed Contracts
 
-- `src/StablePolicyController.sol`
-  - stores policy config per pool ID
-  - owner/pool-admin gated updates
-  - optional timelock queue/execute path
-  - update frequency caps
-  - nonce-based replay-safe updates
-  - emits `ConfigSet(indexed poolId, configHash, policyNonce)`
+### Unichain Sepolia (chainId 1301)
 
-- `src/libraries/PolicyMath.sol`
-  - regime selection with hysteresis
-  - impact estimate helper
-  - deterministic reason codes
+| Contract | Address |
+|---|---|
+| StablePolicyController | [0x3af9941a36beb758c31beea2774ad7abadfc0b1f](https://sepolia.uniscan.xyz/address/0x3af9941a36beb758c31beea2774ad7abadfc0b1f) |
+| DynamicStableManagerHook | [0x3de5b7d2b4af038c738784f29ba3095020bd80c0](https://sepolia.uniscan.xyz/address/0x3de5b7d2b4af038c738784f29ba3095020bd80c0) |
+| Uniswap v4 PoolManager | [0x00b036b58a818b1bc34d502d3fe730db729e62ac](https://sepolia.uniscan.xyz/address/0x00b036b58a818b1bc34d502d3fe730db729e62ac) |
+| Uniswap v4 PositionManager | [0xf969aee60879c54baaed9f3ed26147db216fd664](https://sepolia.uniscan.xyz/address/0xf969aee60879c54baaed9f3ed26147db216fd664) |
+| Uniswap v4 Quoter | [0x56dcd40a3f2d466f48e7f48bdbe5cc9b92ae4472](https://sepolia.uniscan.xyz/address/0x56dcd40a3f2d466f48e7f48bdbe5cc9b92ae4472) |
+| Uniswap v4 StateView | [0xc199f1072a74d4e905aba1a84d9a45e2546b6222](https://sepolia.uniscan.xyz/address/0xc199f1072a74d4e905aba1a84d9a45e2546b6222) |
+| Uniswap UniversalRouter | [0xf70536b3bcc1bd1a972dc186a2cf84cc6da6be5d](https://sepolia.uniscan.xyz/address/0xf70536b3bcc1bd1a972dc186a2cf84cc6da6be5d) |
 
-## Regimes
+## Live Demo Evidence
 
-1. `NORMAL`
-- deviation inside band1
-- lowest fee
-- no restrictive caps by default
+Demo run date: **March 12, 2026**.
 
-2. `SOFT_DEPEG`
-- outside band1 and within band2 (with hysteresis handling)
-- higher fee
-- soft max swap / max impact
+### Phase 1 — Contract Deployment (Unichain Sepolia, chainId 1301)
 
-3. `HARD_DEPEG`
-- outside band2 OR volatility/imbalance threshold breach
-- highest fee
-- strict max swap / max impact
-- optional cooldown rate-limiting
+| Action | Transaction |
+|---|---|
+| Deploy `StablePolicyController` | [`0xd97ae06b...`](https://sepolia.uniscan.xyz/tx/0xd97ae06b49d4803585c7a21fcb2b8ea7d6175e42633851cedd499fbb0f659baa) |
+| Deploy `DynamicStableManagerHook` (CREATE2 mined address) | [`0x99ac7c9a...`](https://sepolia.uniscan.xyz/tx/0x99ac7c9a89f2798f9cbd6bd69b1a0623fcf5d05c6ab85caaaa864792e42c7f99) |
 
-## Deterministic Dependency Strategy
+### Phase 2 — Policy Configuration and Regime Proof (Unichain Sepolia, chainId 1301)
 
-- Foundry + git submodules in `/lib`
-- Uniswap pinned reproducibly:
-  - `lib/v4-periphery` at commit `3779387e5d296f39df543d23524b050f89a62917`
-  - `lib/v4-core` pinned to the exact core commit referenced by that periphery commit
-- lockfiles:
-  - `foundry.lock`
-  - `pnpm-lock.yaml`
-- CI verifies pinned dependency integrity (`scripts/verify_dependencies.sh`)
+| Action | Transaction |
+|---|---|
+| `setPoolConfig(poolId, cfg)` on controller | [`0xdbaf941b...`](https://sepolia.uniscan.xyz/tx/0xdbaf941b4e1d9924a9e9387c7965e72da4e8943e897a40ebb9d5e9cdbc8df971) |
 
-## Quickstart
+> Note: `deriveRegime(...)` and `previewSwapPolicy(...)` values are read from chain state and printed by scripts for verification; those are view calls, not new transactions.
+
+## Running the Demo
 
 ```bash
-make bootstrap
-make build
-make test
-make coverage
-```
-
-`make coverage` enforces 100% line+branch coverage on tracked production contracts (`src/**` excluding mocks).
-
-## Demo
-
-### Full End-to-End Workflow
-
-```bash
+# Run full proof workflow: preflight, coverage, local, stress, testnet demo
 make demo-workflow
 ```
 
-Detailed phase-by-phase script flow:
-- [End-to-End Workflow](./docs/e2e-workflow.md)
+```bash
+# Run Unichain deployment check and on-chain policy demo with tx URLs
+make demo-testnet
 
-### Local
+# Run integration stress regression
+make demo-stress
+
+# Run coverage gate used by CI
+make coverage
+```
 
 ```bash
+# Run deterministic local lifecycle simulation
 make demo-local
 ```
 
-### Stress Test
+## Test Coverage
 
-```bash
-make demo-stress
+```text
+Lines:      100.00% (235/235)
+Statements: 100.00% (307/307)
+Branches:   100.00% (55/55)
+Functions:  100.00% (28/28)
 ```
 
-### Unichain Sepolia Deploy + tx links
-
 ```bash
-UNICHAIN_SEPOLIA_RPC_URL=... PRIVATE_KEY=... POOL_MANAGER=... make demo-testnet
+# Reproduce full tracked-contract coverage report and gate
+forge coverage --no-match-coverage "script/|src/mocks/|test/"
 ```
 
-## Security Model
+- Unit tests: controller, hook, and policy math branch behavior.
+- Edge tests: boundary ticks, invalid config, auth, cooldown, timelock paths.
+- Fuzz tests: deterministic regime selection and config bounds invariants.
+- Integration tests: normal-to-stress lifecycle behavior across contracts.
+- Scripted workflow checks: deployment and proof-chain execution on testnet.
 
-- hook entrypoints callable only by PoolManager (`BaseHook.onlyPoolManager`)
-- permissions encoded in hook address bits and validated in production hook constructor
-- controller updates gated by owner / pool admin
-- optional timelock and frequency caps
-- bounded config validation prevents unsafe fee/band ordering
+## Repository Structure
 
-See `SECURITY.md` and `docs/security.md`.
+```text
+src/
+scripts/
+test/
+docs/
+```
 
 ## Documentation Index
 
-- [Overview](./docs/overview.md)
-- [Architecture](./docs/architecture.md)
-- [Policy Model](./docs/policy-model.md)
-- [Peg Defense](./docs/peg-defense.md)
-- [Security](./docs/security.md)
-- [Deployment](./docs/deployment.md)
-- [Demo Guide](./docs/demo.md)
-- [End-to-End Workflow](./docs/e2e-workflow.md)
-- [API](./docs/api.md)
-- [Testing](./docs/testing.md)
-- [Frontend](./docs/frontend.md)
+| Doc | Description |
+|---|---|
+| `docs/overview.md` | Problem framing, core idea, and component summary. |
+| `docs/architecture.md` | Contract responsibilities and hook permission invariant. |
+| `docs/policy-model.md` | Inputs, bands, regimes, hysteresis, and constraints. |
+| `docs/peg-defense.md` | Scenario-based peg defense behavior under stress. |
+| `docs/security.md` | Threat model, mitigations, invariants, residual risk. |
+| `docs/deployment.md` | Bootstrap and deployment commands for local and Unichain. |
+| `docs/demo.md` | Demo entrypoints and expected outcomes. |
+| `docs/e2e-workflow.md` | Full proof workflow phases and tx evidence. |
+| `docs/api.md` | Exposed contract APIs and events. |
+| `docs/testing.md` | Test categories and CI enforcement. |
 
-## Context Sources Used
+## Key Design Decisions
 
-Primary context used from this repository:
-- `context/uniswap_docs/docs/docs/contracts/v4/concepts/hooks.mdx`
-- `context/uniswap_docs/docs/docs/contracts/v4/guides/hooks/hook-deployment.mdx`
-- `context/uniswap_docs/docs/docs/contracts/v4/quickstart/hooks/swap.mdx`
-- `context/HOOKS_QUICK_REFERENCE.md`
+**Why deterministic on-chain signals instead of oracle-dependent triggers?**  
+Using pool-local state (`tick`, rolling flow, rolling tick movement) keeps regime decisions synchronous with swap execution. Oracle-dependent or off-chain triggers add update lag and cross-system failure modes during fast depegs.
 
-Pinned Uniswap references used for implementation alignment:
-- `lib/v4-core`
-- `lib/v4-periphery`
+**Why split policy storage and swap enforcement into two contracts?**  
+`StablePolicyController` isolates governance and bounds checks, while `DynamicStableManagerHook` stays execution-focused and gas-bounded. A single monolith would increase upgrade surface and blur trust boundaries.
+
+**Why enforce hysteresis and cooldown in policy instead of active liquidity repositioning?**  
+The objective is deterministic swap-policy adaptation without keepers. Hysteresis and cooldown provide anti-flapping and burst control with lower complexity than autonomous liquidity movement.
+
+## Roadmap
+
+- [x] Unichain Sepolia deployment with reproducible scripts.
+- [x] 100% tracked-contract coverage gate in CI.
+- [x] End-to-end demo workflow with tx-link proof output.
+- [ ] External audit and formal review pass before mainnet use.
+- [ ] Pool bootstrap script with live v4 liquidity initialization path.
+- [ ] Optional protocol fee-share extension for managed pools.
+- [ ] Governance hardening with multisig/timelock operational playbook.
+
+## License
+
+MIT
