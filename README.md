@@ -166,6 +166,9 @@ make coverage
 make demo-workflow
 ```
 
+Detailed phase-by-phase script flow:
+- [End-to-End Workflow](./docs/e2e-workflow.md)
+
 ### Local
 
 ```bash
@@ -203,6 +206,7 @@ See `SECURITY.md` and `docs/security.md`.
 - [Security](./docs/security.md)
 - [Deployment](./docs/deployment.md)
 - [Demo Guide](./docs/demo.md)
+- [End-to-End Workflow](./docs/e2e-workflow.md)
 - [API](./docs/api.md)
 - [Testing](./docs/testing.md)
 - [Frontend](./docs/frontend.md)

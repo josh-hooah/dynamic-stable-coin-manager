@@ -6,6 +6,9 @@
 make demo-workflow
 ```
 
+Detailed walkthrough:
+- `docs/e2e-workflow.md`
+
 Phases included:
 - preflight assumptions (including reactive integration check)
 - 100% coverage gate
