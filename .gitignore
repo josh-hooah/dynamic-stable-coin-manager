@@ -12,6 +12,9 @@ lcov.info
 # Frontend
 frontend/node_modules/
 node_modules/
+/frontend/
+/context/
+/lib/
 
 # Dotenv file
 .env

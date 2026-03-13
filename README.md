@@ -61,41 +61,41 @@ test/
 ### Architecture Flow (Subgraphs)
 
 ```mermaid
-flowchart TD
-  subgraph EntryLayer[Entry Layer]
-    EntryTx[Wallet Tx or CLI Script]
+flowchart TB
+  subgraph entry["Entry"]
+    tx["Wallet Tx or CLI Script"]
   end
 
-  subgraph UnichainSepolia[Unichain Sepolia]
-    subgraph UniswapV4[Uniswap v4]
-      PM[PoolManager]
+  subgraph chain["Unichain Sepolia"]
+    subgraph uni["Uniswap v4"]
+      pm["PoolManager"]
     end
-    subgraph PolicyLayer[Policy Layer]
-      Hook[DynamicStableManagerHook]
-      Controller[StablePolicyController]
-      Math[PolicyMath]
+    subgraph policy["Policy Components"]
+      hook["DynamicStableManagerHook"]
+      ctrl["StablePolicyController"]
+      math["PolicyMath"]
     end
   end
 
-  EntryTx --> PM
-  PM -->|beforeSwap| Hook
-  Hook -->|getPoolConfig| Controller
-  Hook -->|selectRegime| Math
-  Hook -->|feeOverride or revert| PM
-  PM -->|afterSwap| Hook
+  tx --> pm
+  pm -->|beforeSwap| hook
+  hook -->|read config| ctrl
+  hook -->|compute regime| math
+  hook -->|fee override or revert| pm
+  pm -->|afterSwap| hook
 ```
 
 ### User Perspective Flow
 
 ```mermaid
 flowchart LR
-  Start[Wallet Tx: IPoolManager.swap or forge script] --> Callback[PoolManager calls hook beforeSwap]
-  Callback --> Decision{Policy checks pass?}
-  Decision -->|Yes| FeePath[Return fee override when dynamic fee enabled]
-  FeePath --> Execute[PoolManager executes swap]
-  Execute --> After[Hook afterSwap updates runtime]
-  After --> EventOk[PolicyTriggered emitted]
-  Decision -->|No| RevertPath[Revert: CooldownActive / MaxSwapExceeded / ImpactTooHigh]
+  tx["Wallet Tx or CLI Script"] --> pre["PoolManager calls beforeSwap"]
+  pre --> check{"Policy checks pass"}
+  check -->|yes| fee["Return fee override if dynamic fee pool"]
+  fee --> exec["PoolManager executes swap"]
+  exec --> post["Hook afterSwap updates runtime"]
+  post --> event["PolicyTriggered emitted"]
+  check -->|no| deny["Revert with guard error"]
 ```
 
 ### Interaction Sequence
@@ -104,26 +104,23 @@ flowchart LR
 sequenceDiagram
   participant Operator
   participant PoolManager
-  participant Hook as DynamicStableManagerHook
-  participant Controller as StablePolicyController
-  participant Math as PolicyMath
+  participant Hook
+  participant Controller
+  participant PolicyMath
 
-  Note over Operator,Controller: Governance setup
-  Operator->>Controller: setPoolConfig(poolId, cfg)
-  Controller-->>Operator: ConfigSet(poolId, configHash, policyNonce)
-
-  Note over Operator,Hook: Swap execution path
-  Operator->>PoolManager: swap(key, params, hookData)
-  PoolManager->>Hook: beforeSwap(sender, key, params, hookData)
-  Hook->>Controller: getPoolConfig(poolId)
-  Hook->>PoolManager: StateLibrary.getSlot0(poolId)
-  Hook->>Math: selectRegime(input)
+  Operator->>Controller: setPoolConfig(poolId,cfg)
+  Controller-->>Operator: ConfigSet
+  Operator->>PoolManager: swap(key,params,hookData)
+  PoolManager->>Hook: beforeSwap
+  Hook->>Controller: getPoolConfig
+  Hook->>PoolManager: getSlot0
+  Hook->>PolicyMath: selectRegime
   alt guard violation
-    Hook-->>PoolManager: revert(error)
+    Hook-->>PoolManager: revert
   else allowed
-    Hook-->>PoolManager: selector, ZERO_DELTA, feeOverride
-    PoolManager->>Hook: afterSwap(sender, key, params, delta, hookData)
-    Hook-->>PoolManager: selector, 0
+    Hook-->>PoolManager: return selector delta fee
+    PoolManager->>Hook: afterSwap
+    Hook-->>PoolManager: return selector
   end
 ```
 
