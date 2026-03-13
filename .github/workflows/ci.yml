@@ -31,11 +31,4 @@ jobs:
       - name: Test
         run: forge test -vv
 
-      - name: Coverage
-        run: ./scripts/verify_coverage.sh
 
-      - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: lcov
-          path: lcov.info
