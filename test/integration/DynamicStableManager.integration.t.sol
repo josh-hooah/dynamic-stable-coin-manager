@@ -7,19 +7,20 @@ import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
+import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
 import {StablePolicyController} from "../../src/StablePolicyController.sol";
 import {DynamicStableManagerHook} from "../../src/DynamicStableManagerHook.sol";
 import {MockPoolManager} from "../../src/mocks/MockPoolManager.sol";
-import {TestDynamicStableManagerHook} from "../mocks/TestDynamicStableManagerHook.sol";
 
 contract DynamicStableManagerIntegrationTest is Test {
     using PoolIdLibrary for PoolKey;
 
     MockPoolManager internal manager;
     StablePolicyController internal controller;
-    TestDynamicStableManagerHook internal hook;
+    DynamicStableManagerHook internal hook;
 
     PoolKey internal key;
     PoolId internal poolId;
@@ -27,7 +28,7 @@ contract DynamicStableManagerIntegrationTest is Test {
     function setUp() external {
         manager = new MockPoolManager();
         controller = new StablePolicyController(address(this), 0, 0);
-        hook = new TestDynamicStableManagerHook(IPoolManager(address(manager)), controller);
+        hook = _deployHook(IPoolManager(address(manager)), controller);
 
         key = PoolKey({
             currency0: Currency.wrap(address(0x1111)),
@@ -62,6 +63,18 @@ contract DynamicStableManagerIntegrationTest is Test {
         cfg.policyNonce = 1;
 
         controller.setPoolConfig(poolId, cfg);
+    }
+
+    function _deployHook(
+        IPoolManager poolManager,
+        StablePolicyController policyController
+    ) internal returns (DynamicStableManagerHook deployedHook) {
+        uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
+        bytes memory constructorArgs = abi.encode(poolManager, policyController);
+        (address expectedHookAddress, bytes32 salt) =
+            HookMiner.find(address(this), flags, type(DynamicStableManagerHook).creationCode, constructorArgs);
+        deployedHook = new DynamicStableManagerHook{salt: salt}(poolManager, policyController);
+        assertEq(address(deployedHook), expectedHookAddress, "hook-address-mismatch");
     }
 
     function _beforeSwap(

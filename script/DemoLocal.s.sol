@@ -6,18 +6,21 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {BeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
+import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
 import {MockERC20} from "../src/mocks/MockERC20.sol";
 import {MockPoolManager} from "../src/mocks/MockPoolManager.sol";
 import {StablePolicyController} from "../src/StablePolicyController.sol";
-import {DynamicStableManagerHookUnsafe} from "../src/mocks/DynamicStableManagerHookUnsafe.sol";
+import {DynamicStableManagerHook} from "../src/DynamicStableManagerHook.sol";
 
 contract DemoLocalScript is Script {
     using PoolIdLibrary for PoolKey;
+    address internal constant CREATE2_DEPLOYER = address(0x4e59b44847b379578588920cA78FbF26c0B4956C);
 
     struct DemoStats {
         uint256 succeeded;
@@ -35,8 +38,12 @@ contract DemoLocalScript is Script {
         MockERC20 dai = new MockERC20("Mock DAI", "mDAI", 18);
         MockPoolManager manager = new MockPoolManager();
         StablePolicyController controller = new StablePolicyController(deployer, 0, 0);
-        DynamicStableManagerHookUnsafe hook =
-            new DynamicStableManagerHookUnsafe(IPoolManager(address(manager)), controller);
+        uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
+        bytes memory constructorArgs = abi.encode(IPoolManager(address(manager)), controller);
+        (address expectedHook, bytes32 salt) =
+            HookMiner.find(CREATE2_DEPLOYER, flags, type(DynamicStableManagerHook).creationCode, constructorArgs);
+        DynamicStableManagerHook hook = new DynamicStableManagerHook{salt: salt}(IPoolManager(address(manager)), controller);
+        require(address(hook) == expectedHook, "hook-address-mismatch");
 
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(address(usdc)),
@@ -106,7 +113,7 @@ contract DemoLocalScript is Script {
 
     function _simulateSwap(
         MockPoolManager manager,
-        DynamicStableManagerHookUnsafe hook,
+        DynamicStableManagerHook hook,
         PoolKey memory key,
         PoolId poolId,
         int24 tick,

@@ -193,25 +193,25 @@ make demo-local
 ## Test Coverage
 
 ```text
-Lines:      100.00% (235/235)
-Statements: 100.00% (307/307)
-Branches:   100.00% (55/55)
-Functions:  100.00% (28/28)
+Lines:      100.00% (284/284)
+Statements: 100.00% (350/350)
+Branches:   100.00% (56/56)
+Functions:  100.00% (41/41)
 ```
 
 ```bash
 # Reproduce full tracked-contract coverage report and gate
-forge coverage --no-match-coverage "script/|test/|lib/|helpers/|src/mocks/"
+forge coverage --no-match-coverage "script/|lib/|helpers/"
 ```
 
 ```bash
 # Reproduce coverage summary with IR minimum mode
-forge coverage --ir-minimum --no-match-coverage "script/|test/|lib/|helpers/|src/mocks/"
+forge coverage --ir-minimum --no-match-coverage "script/|lib/|helpers/"
 ```
 
-Coverage summary snapshot (`--ir-minimum`):
+Coverage summary snapshot (mocks and test helpers included):
 
-![Forge Coverage Summary](./assets/coverage-ir-minimum.svg)
+![Forge Coverage Summary](./assets/coverage-summary.svg)
 
 - Unit tests: controller, hook, and policy math branch behavior.
 - Edge tests: boundary ticks, invalid config, auth, cooldown, timelock paths.

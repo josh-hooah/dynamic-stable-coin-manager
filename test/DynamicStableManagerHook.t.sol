@@ -11,13 +11,12 @@ import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {BeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
 import {PolicyMath} from "../src/libraries/PolicyMath.sol";
 import {StablePolicyController} from "../src/StablePolicyController.sol";
 import {DynamicStableManagerHook} from "../src/DynamicStableManagerHook.sol";
 import {MockPoolManager} from "../src/mocks/MockPoolManager.sol";
-import {DynamicStableManagerHookUnsafe} from "../src/mocks/DynamicStableManagerHookUnsafe.sol";
-import {TestDynamicStableManagerHook} from "./mocks/TestDynamicStableManagerHook.sol";
 
 contract DynamicStableManagerHookTest is Test {
     using PoolIdLibrary for PoolKey;
@@ -26,7 +25,7 @@ contract DynamicStableManagerHookTest is Test {
 
     MockPoolManager internal manager;
     StablePolicyController internal controller;
-    TestDynamicStableManagerHook internal hook;
+    DynamicStableManagerHook internal hook;
 
     PoolKey internal key;
     PoolId internal poolId;
@@ -34,7 +33,7 @@ contract DynamicStableManagerHookTest is Test {
     function setUp() external {
         manager = new MockPoolManager();
         controller = new StablePolicyController(address(this), 0, 0);
-        hook = new TestDynamicStableManagerHook(IPoolManager(address(manager)), controller);
+        hook = _deployHook(IPoolManager(address(manager)), controller);
 
         key = PoolKey({
             currency0: Currency.wrap(address(0x1000)),
@@ -48,6 +47,18 @@ contract DynamicStableManagerHookTest is Test {
         manager.setSlot0(poolId, uint160(1e18), 0, 0, 0);
 
         controller.setPoolConfig(poolId, _baseConfig(1));
+    }
+
+    function _deployHook(
+        IPoolManager poolManager,
+        StablePolicyController policyController
+    ) internal returns (DynamicStableManagerHook deployedHook) {
+        uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
+        bytes memory constructorArgs = abi.encode(poolManager, policyController);
+        (address expectedHookAddress, bytes32 salt) =
+            HookMiner.find(address(this), flags, type(DynamicStableManagerHook).creationCode, constructorArgs);
+        deployedHook = new DynamicStableManagerHook{salt: salt}(poolManager, policyController);
+        assertEq(address(deployedHook), expectedHookAddress, "hook-address-mismatch");
     }
 
     function _baseConfig(
@@ -87,8 +98,11 @@ contract DynamicStableManagerHookTest is Test {
     }
 
     function test_ConstructorRevertsWhenControllerIsZeroAddress() external {
+        uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
+        bytes memory constructorArgs = abi.encode(IPoolManager(address(manager)), StablePolicyController(address(0)));
+        (, bytes32 salt) = HookMiner.find(address(this), flags, type(DynamicStableManagerHook).creationCode, constructorArgs);
         vm.expectRevert(DynamicStableManagerHook.ControllerZeroAddress.selector);
-        new DynamicStableManagerHookUnsafe(IPoolManager(address(manager)), StablePolicyController(address(0)));
+        new DynamicStableManagerHook{salt: salt}(IPoolManager(address(manager)), StablePolicyController(address(0)));
     }
 
     function test_GetHookPermissionsEnablesOnlySwapCallbacks() external view {
