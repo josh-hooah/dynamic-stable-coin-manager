@@ -201,8 +201,17 @@ Functions:  100.00% (28/28)
 
 ```bash
 # Reproduce full tracked-contract coverage report and gate
-forge coverage --no-match-coverage "script/|src/mocks/|test/"
+forge coverage --no-match-coverage "script/|test/|lib/|helpers/|src/mocks/"
 ```
+
+```bash
+# Reproduce coverage summary with IR minimum mode
+forge coverage --ir-minimum --no-match-coverage "script/|test/|lib/|helpers/|src/mocks/"
+```
+
+Coverage summary snapshot (`--ir-minimum`):
+
+![Forge Coverage Summary](./assets/coverage-ir-minimum.svg)
 
 - Unit tests: controller, hook, and policy math branch behavior.
 - Edge tests: boundary ticks, invalid config, auth, cooldown, timelock paths.

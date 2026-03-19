@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NO_MATCH_COVERAGE_REGEX="${NO_MATCH_COVERAGE_REGEX:-script/|src/mocks/|test/}"
+NO_MATCH_COVERAGE_REGEX="${NO_MATCH_COVERAGE_REGEX:-script/|test/|lib/|helpers/|src/mocks/}"
 REPORT_FILE="${COVERAGE_REPORT_FILE:-lcov.info}"
 
 forge coverage --report lcov --no-match-coverage "$NO_MATCH_COVERAGE_REGEX" --report-file "$REPORT_FILE" >/tmp/dsm-coverage.log 2>&1 || {

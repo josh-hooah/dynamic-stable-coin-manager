@@ -11,6 +11,7 @@ optimizer_runs = 1_000_000
 via_ir = true
 ffi = true
 fs_permissions = [{ access = "read-write", path = "./" }]
+no_match_coverage = "script/|test/|lib/|helpers/|src/mocks/"
 
 [profile.default.fuzz]
 runs = 512
